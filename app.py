@@ -18,7 +18,7 @@ except Exception:  # psycopg2 poate lipsi în unele medii locale
 # --- Config DB ---
 SQLITE_DB_NAME = "programari.db"
 SUPABASE_DB_HOST = "aws-1-eu-west-1.pooler.supabase.com"
-SUPABASE_DB_NAME = "db_cfmoto"
+SUPABASE_DB_NAME = "postgres"
 SUPABASE_DB_USER = "postgres.vdqhdujogtqevyulahoh"
 SUPABASE_DB_PASSWORD = "Jgsly777!@#$"
 SUPABASE_DB_PORT = 5432
