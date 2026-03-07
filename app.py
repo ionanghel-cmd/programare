@@ -1,43 +1,134 @@
 import csv
 import io
+import os
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
-DB_NAME = "programari.db"
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except Exception:  # psycopg2 poate lipsi în unele medii locale
+    psycopg2 = None
+    RealDictCursor = None
+
+# --- Config DB ---
+SQLITE_DB_NAME = "programari.db"
+SUPABASE_DB_HOST = "aws-1-eu-west-1.pooler.supabase.com"
+SUPABASE_DB_NAME = "db_cfmoto"
+SUPABASE_DB_USER = "postgres.vdqhdujogtqevyulahoh"
+SUPABASE_DB_PASSWORD = "Jgsly777!@#$"
+SUPABASE_DB_PORT = 5432
+USE_SUPABASE = os.getenv("USE_SUPABASE", "true").lower() in {"1", "true", "yes"}
 
 
 # -----------------------------
 # Database layer
 # -----------------------------
-def get_connection() -> sqlite3.Connection:
-    """Return a SQLite connection with rows accessible like dicts."""
-    conn = sqlite3.connect(DB_NAME)
+def get_connection() -> Tuple[Any, str]:
+    """Return DB connection and backend type: postgres/sqlite."""
+    if USE_SUPABASE and psycopg2 is not None:
+        try:
+            conn = psycopg2.connect(
+                host=SUPABASE_DB_HOST,
+                dbname=SUPABASE_DB_NAME,
+                user=SUPABASE_DB_USER,
+                password=SUPABASE_DB_PASSWORD,
+                port=SUPABASE_DB_PORT,
+                sslmode="require",
+                connect_timeout=8,
+            )
+            return conn, "postgres"
+        except Exception:
+            pass
+
+    conn = sqlite3.connect(SQLITE_DB_NAME)
     conn.row_factory = sqlite3.Row
-    return conn
+    return conn, "sqlite"
+
+
+def fetchall(query: str, params: Tuple[Any, ...] = ()) -> List[Dict[str, Any]]:
+    conn, backend = get_connection()
+    with closing(conn):
+        if backend == "postgres":
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+                return [dict(row) for row in rows]
+        cur = conn.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def fetchone(query: str, params: Tuple[Any, ...] = ()) -> Optional[Dict[str, Any]]:
+    conn, backend = get_connection()
+    with closing(conn):
+        if backend == "postgres":
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+        row = conn.execute(query, params).fetchone()
+        return dict(row) if row else None
+
+
+def execute(query: str, params: Tuple[Any, ...] = ()) -> None:
+    conn, backend = get_connection()
+    with closing(conn):
+        if backend == "postgres":
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+            conn.commit()
+            return
+        conn.execute(query, params)
+        conn.commit()
 
 
 def init_db() -> None:
-    """Create table if it does not already exist."""
-    query = """
-    CREATE TABLE IF NOT EXISTS programari (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        data_programare TEXT NOT NULL,
-        ora_programare TEXT NOT NULL,
-        client TEXT NOT NULL,
-        telefon TEXT,
-        vehicul TEXT NOT NULL,
-        interventie TEXT NOT NULL,
-        observatii TEXT,
-        created_at TEXT NOT NULL
-    )
-    """
-    with closing(get_connection()) as conn:
-        conn.execute(query)
-        conn.commit()
+    """Create table if it does not already exist in active DB backend."""
+    _, backend = get_connection()
+
+    if backend == "postgres":
+        query = """
+        CREATE TABLE IF NOT EXISTS programari (
+            id BIGSERIAL PRIMARY KEY,
+            data_programare TEXT NOT NULL,
+            ora_programare TEXT NOT NULL,
+            client TEXT NOT NULL,
+            telefon TEXT,
+            vehicul TEXT NOT NULL,
+            interventie TEXT NOT NULL,
+            observatii TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    else:
+        query = """
+        CREATE TABLE IF NOT EXISTS programari (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_programare TEXT NOT NULL,
+            ora_programare TEXT NOT NULL,
+            client TEXT NOT NULL,
+            telefon TEXT,
+            vehicul TEXT NOT NULL,
+            interventie TEXT NOT NULL,
+            observatii TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+
+    execute(query)
+
+
+def sql_for(backend: str, sqlite_sql: str, postgres_sql: str) -> str:
+    return postgres_sql if backend == "postgres" else sqlite_sql
+
+
+def active_backend() -> str:
+    _, backend = get_connection()
+    return backend
 
 
 def add_programare(
@@ -50,38 +141,51 @@ def add_programare(
     observatii: str,
 ) -> bool:
     """Insert appointment if duplicate does not exist. Returns True on success."""
-    duplicate_query = """
-    SELECT id FROM programari
-    WHERE data_programare = ? AND ora_programare = ? AND lower(trim(client)) = lower(trim(?))
-    LIMIT 1
-    """
-    insert_query = """
-    INSERT INTO programari (
-        data_programare, ora_programare, client, telefon, vehicul, interventie, observatii, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """
+    backend = active_backend()
+    duplicate_query = sql_for(
+        backend,
+        """
+        SELECT id FROM programari
+        WHERE data_programare = ? AND ora_programare = ? AND lower(trim(client)) = lower(trim(?))
+        LIMIT 1
+        """,
+        """
+        SELECT id FROM programari
+        WHERE data_programare = %s AND ora_programare = %s AND lower(trim(client)) = lower(trim(%s))
+        LIMIT 1
+        """,
+    )
+    insert_query = sql_for(
+        backend,
+        """
+        INSERT INTO programari (
+            data_programare, ora_programare, client, telefon, vehicul, interventie, observatii, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        """
+        INSERT INTO programari (
+            data_programare, ora_programare, client, telefon, vehicul, interventie, observatii, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+    )
 
-    with closing(get_connection()) as conn:
-        duplicate = conn.execute(
-            duplicate_query, (data_programare, ora_programare, client)
-        ).fetchone()
-        if duplicate:
-            return False
+    duplicate = fetchone(duplicate_query, (data_programare, ora_programare, client))
+    if duplicate:
+        return False
 
-        conn.execute(
-            insert_query,
-            (
-                data_programare,
-                ora_programare,
-                client.strip(),
-                telefon.strip(),
-                vehicul.strip(),
-                interventie.strip(),
-                observatii.strip(),
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        conn.commit()
+    execute(
+        insert_query,
+        (
+            data_programare,
+            ora_programare,
+            client.strip(),
+            telefon.strip(),
+            vehicul.strip(),
+            interventie.strip(),
+            observatii.strip(),
+            datetime.now().isoformat(timespec="seconds"),
+        ),
+    )
     return True
 
 
@@ -90,28 +194,38 @@ def get_programari(
     client_q: str = "",
     telefon_q: str = "",
     vehicul_q: str = "",
-) -> List[sqlite3.Row]:
+) -> List[Dict[str, Any]]:
     """Fetch appointments filtered by date and optional search inputs."""
-    query = """
-    SELECT * FROM programari
-    WHERE data_programare = ?
-      AND client LIKE ?
-      AND COALESCE(telefon, '') LIKE ?
-      AND vehicul LIKE ?
-    ORDER BY ora_programare ASC, id ASC
-    """
+    backend = active_backend()
+    query = sql_for(
+        backend,
+        """
+        SELECT * FROM programari
+        WHERE data_programare = ?
+          AND client LIKE ?
+          AND COALESCE(telefon, '') LIKE ?
+          AND vehicul LIKE ?
+        ORDER BY ora_programare ASC, id ASC
+        """,
+        """
+        SELECT * FROM programari
+        WHERE data_programare = %s
+          AND client ILIKE %s
+          AND COALESCE(telefon, '') ILIKE %s
+          AND vehicul ILIKE %s
+        ORDER BY ora_programare ASC, id ASC
+        """,
+    )
 
-    with closing(get_connection()) as conn:
-        rows = conn.execute(
-            query,
-            (
-                zi_selectata,
-                f"%{client_q.strip()}%",
-                f"%{telefon_q.strip()}%",
-                f"%{vehicul_q.strip()}%",
-            ),
-        ).fetchall()
-    return rows
+    return fetchall(
+        query,
+        (
+            zi_selectata,
+            f"%{client_q.strip()}%",
+            f"%{telefon_q.strip()}%",
+            f"%{vehicul_q.strip()}%",
+        ),
+    )
 
 
 def update_programare(
@@ -125,55 +239,75 @@ def update_programare(
     observatii: str,
 ) -> bool:
     """Update appointment. Returns False if duplicate conflict is found."""
-    duplicate_query = """
-    SELECT id FROM programari
-    WHERE data_programare = ? AND ora_programare = ?
-      AND lower(trim(client)) = lower(trim(?))
-      AND id != ?
-    LIMIT 1
-    """
-    update_query = """
-    UPDATE programari
-    SET data_programare = ?,
-        ora_programare = ?,
-        client = ?,
-        telefon = ?,
-        vehicul = ?,
-        interventie = ?,
-        observatii = ?
-    WHERE id = ?
-    """
+    backend = active_backend()
+    duplicate_query = sql_for(
+        backend,
+        """
+        SELECT id FROM programari
+        WHERE data_programare = ? AND ora_programare = ?
+          AND lower(trim(client)) = lower(trim(?))
+          AND id != ?
+        LIMIT 1
+        """,
+        """
+        SELECT id FROM programari
+        WHERE data_programare = %s AND ora_programare = %s
+          AND lower(trim(client)) = lower(trim(%s))
+          AND id != %s
+        LIMIT 1
+        """,
+    )
+    update_query = sql_for(
+        backend,
+        """
+        UPDATE programari
+        SET data_programare = ?,
+            ora_programare = ?,
+            client = ?,
+            telefon = ?,
+            vehicul = ?,
+            interventie = ?,
+            observatii = ?
+        WHERE id = ?
+        """,
+        """
+        UPDATE programari
+        SET data_programare = %s,
+            ora_programare = %s,
+            client = %s,
+            telefon = %s,
+            vehicul = %s,
+            interventie = %s,
+            observatii = %s
+        WHERE id = %s
+        """,
+    )
 
-    with closing(get_connection()) as conn:
-        duplicate = conn.execute(
-            duplicate_query,
-            (data_programare, ora_programare, client, programare_id),
-        ).fetchone()
-        if duplicate:
-            return False
+    duplicate = fetchone(duplicate_query, (data_programare, ora_programare, client, programare_id))
+    if duplicate:
+        return False
 
-        conn.execute(
-            update_query,
-            (
-                data_programare,
-                ora_programare,
-                client.strip(),
-                telefon.strip(),
-                vehicul.strip(),
-                interventie.strip(),
-                observatii.strip(),
-                programare_id,
-            ),
-        )
-        conn.commit()
+    execute(
+        update_query,
+        (
+            data_programare,
+            ora_programare,
+            client.strip(),
+            telefon.strip(),
+            vehicul.strip(),
+            interventie.strip(),
+            observatii.strip(),
+            programare_id,
+        ),
+    )
     return True
 
 
 def delete_programare(programare_id: int) -> None:
     """Delete appointment by ID."""
-    with closing(get_connection()) as conn:
-        conn.execute("DELETE FROM programari WHERE id = ?", (programare_id,))
-        conn.commit()
+    backend = active_backend()
+    query = "DELETE FROM programari WHERE id = %s" if backend == "postgres" else "DELETE FROM programari WHERE id = ?"
+    execute(query, (programare_id,))
 
 
 def duplicate_programare(
@@ -182,25 +316,24 @@ def duplicate_programare(
     ora_programare: str,
 ) -> bool:
     """Duplicate an appointment to another slot. Returns False on conflict/missing."""
-    select_query = "SELECT * FROM programari WHERE id = ?"
-
-    with closing(get_connection()) as conn:
-        original = conn.execute(select_query, (original_id,)).fetchone()
-        if not original:
-            return False
+    backend = active_backend()
+    query = "SELECT * FROM programari WHERE id = %s" if backend == "postgres" else "SELECT * FROM programari WHERE id = ?"
+    original = fetchone(query, (original_id,))
+    if not original:
+        return False
 
     return add_programare(
         data_programare=data_programare,
         ora_programare=ora_programare,
         client=original["client"],
-        telefon=original["telefon"] or "",
+        telefon=original.get("telefon") or "",
         vehicul=original["vehicul"],
         interventie=original["interventie"],
-        observatii=original["observatii"] or "",
+        observatii=original.get("observatii") or "",
     )
 
 
-def export_programari_csv(rows: List[sqlite3.Row]) -> bytes:
+def export_programari_csv(rows: List[Dict[str, Any]]) -> bytes:
     """Build CSV bytes from current filtered rows."""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -225,10 +358,10 @@ def export_programari_csv(rows: List[sqlite3.Row]) -> bytes:
                 row["data_programare"],
                 row["ora_programare"],
                 row["client"],
-                row["telefon"] or "",
+                row.get("telefon") or "",
                 row["vehicul"],
                 row["interventie"],
-                row["observatii"] or "",
+                row.get("observatii") or "",
                 row["created_at"],
             ]
         )
@@ -339,21 +472,19 @@ def render_new_appointment_tab() -> None:
                     if ok:
                         st.success("Programarea a fost salvată cu succes.")
                     else:
-                        st.warning(
-                            "Există deja o programare cu aceeași dată, oră și client."
-                        )
+                        st.warning("Există deja o programare cu aceeași dată, oră și client.")
 
 
-def render_programare_card(programare: sqlite3.Row) -> None:
+def render_programare_card(programare: Dict[str, Any]) -> None:
     pid = int(programare["id"])
     st.markdown(
         f"""
         <div class="appt-card">
             <div class="appt-time">🕒 {programare['ora_programare']}</div>
             <div class="appt-main">{programare['client']} · {programare['vehicul']}</div>
-            <div class="appt-meta"><strong>Telefon:</strong> {programare['telefon'] or '-'}</div>
+            <div class="appt-meta"><strong>Telefon:</strong> {programare.get('telefon') or '-'}</div>
             <div class="appt-meta"><strong>Intervenție:</strong> {programare['interventie']}</div>
-            <div class="appt-meta"><strong>Observații:</strong> {programare['observatii'] or '-'}</div>
+            <div class="appt-meta"><strong>Observații:</strong> {programare.get('observatii') or '-'}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -397,14 +528,12 @@ def render_programare_card(programare: sqlite3.Row) -> None:
                     )
 
                 client_edit = st.text_input("Client", value=programare["client"], key=f"edit_client_{pid}")
-                telefon_edit = st.text_input("Telefon", value=programare["telefon"] or "", key=f"edit_tel_{pid}")
+                telefon_edit = st.text_input("Telefon", value=programare.get("telefon") or "", key=f"edit_tel_{pid}")
                 vehicul_edit = st.text_input("Vehicul", value=programare["vehicul"], key=f"edit_veh_{pid}")
-                interventie_edit = st.text_input(
-                    "Intervenție", value=programare["interventie"], key=f"edit_int_{pid}"
-                )
+                interventie_edit = st.text_input("Intervenție", value=programare["interventie"], key=f"edit_int_{pid}")
                 observatii_edit = st.text_area(
                     "Observații",
-                    value=programare["observatii"] or "",
+                    value=programare.get("observatii") or "",
                     key=f"edit_obs_{pid}",
                     height=80,
                 )
@@ -430,9 +559,7 @@ def render_programare_card(programare: sqlite3.Row) -> None:
                             st.session_state[f"edit_{pid}"] = False
                             st.rerun()
                         else:
-                            st.warning(
-                                "Nu s-a salvat: există deja o programare identică (data, ora, client)."
-                            )
+                            st.warning("Nu s-a salvat: există deja o programare identică (data, ora, client).")
 
     if st.session_state.get(f"dup_{pid}", False):
         with st.container(border=True):
@@ -466,9 +593,7 @@ def render_programare_card(programare: sqlite3.Row) -> None:
                         st.session_state[f"dup_{pid}"] = False
                         st.rerun()
                     else:
-                        st.warning(
-                            "Copierea nu a fost făcută: există deja o programare identică sau originalul lipsește."
-                        )
+                        st.warning("Copierea nu a fost făcută: există deja o programare identică sau originalul lipsește.")
 
     if st.session_state.get(f"del_{pid}", False):
         with st.container(border=True):
@@ -519,7 +644,6 @@ def render_agenda_tab() -> None:
         data=csv_bytes,
         file_name=f"programari_{selected_date.isoformat()}.csv",
         mime="text/csv",
-        use_container_width=False,
     )
 
     st.caption(f"Rezultate: {len(rows)} programare/programări")
@@ -534,14 +658,16 @@ def render_agenda_tab() -> None:
 
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Programări Service Moto / ATV",
-        page_icon="🛠️",
-        layout="wide",
-    )
+    st.set_page_config(page_title="Programări Service Moto / ATV", page_icon="🛠️", layout="wide")
 
     init_db()
     inject_styles()
+
+    backend = active_backend()
+    if backend == "postgres":
+        st.success("Bază de date activă: Supabase PostgreSQL")
+    else:
+        st.warning("Supabase indisponibil în acest mediu. Se folosește fallback local SQLite (programari.db).")
 
     st.title("Programări Service Moto / ATV")
     st.markdown(
@@ -550,10 +676,8 @@ def main() -> None:
     )
 
     tab_new, tab_list = st.tabs(["Programare nouă", "Programări"])
-
     with tab_new:
         render_new_appointment_tab()
-
     with tab_list:
         render_agenda_tab()
 
