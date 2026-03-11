@@ -758,8 +758,6 @@ def main() -> None:
     else:
         st.warning("Supabase indisponibil în acest mediu. Se folosește fallback local SQLite (programari.db).")
 
-    with st.expander("SQL pentru tabele Supabase"):
-        st.code(SUPABASE_SCHEMA_SQL, language="sql")
 
     st.title("Programări Service Moto / ATV")
     st.markdown(
