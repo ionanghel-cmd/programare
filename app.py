@@ -15,6 +15,13 @@ except Exception:  # psycopg2 poate lipsi în unele medii locale
     psycopg2 = None
     RealDictCursor = None
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # psycopg (v3) poate lipsi în unele medii locale
+    psycopg = None
+    dict_row = None
+
 # --- Config DB ---
 SQLITE_DB_NAME = "programari.db"
 
@@ -61,8 +68,6 @@ def get_connection() -> Tuple[Any, str]:
 
     if not USE_SUPABASE:
         LAST_DB_REASON = "USE_SUPABASE este dezactivat (false)."
-    elif psycopg2 is None:
-        LAST_DB_REASON = "Lipsește pachetul psycopg2 în mediul curent."
     else:
         missing_keys = [
             key
@@ -73,7 +78,9 @@ def get_connection() -> Tuple[Any, str]:
             }.items()
             if not value
         ]
-        if not missing_keys:
+        if missing_keys:
+            LAST_DB_REASON = f"Lipsesc chei Supabase: {', '.join(missing_keys)}"
+        elif psycopg2 is not None:
             try:
                 conn = psycopg2.connect(
                     host=SUPABASE_DB_HOST,
@@ -84,12 +91,27 @@ def get_connection() -> Tuple[Any, str]:
                     sslmode="require",
                     connect_timeout=8,
                 )
-                LAST_DB_REASON = "Conectat cu succes la Supabase PostgreSQL."
+                LAST_DB_REASON = "Conectat cu succes la Supabase PostgreSQL (driver psycopg2)."
                 return conn, "postgres"
             except Exception as exc:
-                LAST_DB_REASON = f"Conexiunea PostgreSQL a eșuat: {str(exc)}"
+                LAST_DB_REASON = f"Conexiunea PostgreSQL (psycopg2) a eșuat: {str(exc)}"
+        elif psycopg is not None:
+            try:
+                conn = psycopg.connect(
+                    host=SUPABASE_DB_HOST,
+                    dbname=SUPABASE_DB_NAME,
+                    user=SUPABASE_DB_USER,
+                    password=SUPABASE_DB_PASSWORD,
+                    port=SUPABASE_DB_PORT,
+                    sslmode="require",
+                    connect_timeout=8,
+                )
+                LAST_DB_REASON = "Conectat cu succes la Supabase PostgreSQL (driver psycopg)."
+                return conn, "postgres"
+            except Exception as exc:
+                LAST_DB_REASON = f"Conexiunea PostgreSQL (psycopg) a eșuat: {str(exc)}"
         else:
-            LAST_DB_REASON = f"Lipsesc chei Supabase: {', '.join(missing_keys)}"
+            LAST_DB_REASON = "Lipsește driver PostgreSQL. Instalează `psycopg2-binary` sau `psycopg`."
 
     conn = sqlite3.connect(SQLITE_DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -100,7 +122,12 @@ def fetchall(query: str, params: Tuple[Any, ...] = ()) -> List[Dict[str, Any]]:
     conn, backend = get_connection()
     with closing(conn):
         if backend == "postgres":
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if psycopg2 is not None:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+                    return [dict(row) for row in rows]
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(query, params)
                 rows = cur.fetchall()
                 return [dict(row) for row in rows]
@@ -112,7 +139,12 @@ def fetchone(query: str, params: Tuple[Any, ...] = ()) -> Optional[Dict[str, Any
     conn, backend = get_connection()
     with closing(conn):
         if backend == "postgres":
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if psycopg2 is not None:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, params)
+                    row = cur.fetchone()
+                    return dict(row) if row else None
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(query, params)
                 row = cur.fetchone()
                 return dict(row) if row else None
@@ -776,7 +808,6 @@ def main() -> None:
         st.success("Bază de date activă: Supabase PostgreSQL")
     else:
         st.warning(f"Supabase indisponibil. Se folosește fallback local SQLite (programari.db). Motiv: {LAST_DB_REASON}")
-
 
 
     st.title("Programări Service Moto / ATV")
