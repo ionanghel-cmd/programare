@@ -778,6 +778,7 @@ def main() -> None:
         st.warning(f"Supabase indisponibil. Se folosește fallback local SQLite (programari.db). Motiv: {LAST_DB_REASON}")
 
 
+
     st.title("Programări Service Moto / ATV")
     st.markdown(
         '<p class="subtitle">Panou simplu pentru planificarea rapidă a programărilor</p>',
