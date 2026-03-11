@@ -17,12 +17,39 @@ except Exception:  # psycopg2 poate lipsi în unele medii locale
 
 # --- Config DB ---
 SQLITE_DB_NAME = "programari.db"
-SUPABASE_DB_HOST = "aws-1-eu-west-1.pooler.supabase.com"
-SUPABASE_DB_NAME = "postgres"
-SUPABASE_DB_USER = "postgres.vdqhdujogtqevyulahoh"
-SUPABASE_DB_PASSWORD = "Jgsly777!@#$"
-SUPABASE_DB_PORT = 5432
-USE_SUPABASE = os.getenv("USE_SUPABASE", "true").lower() in {"1", "true", "yes"}
+
+
+def _secret(name: str, default: str = "") -> str:
+    return str(st.secrets.get(name, os.getenv(name, default))).strip()
+
+
+SUPABASE_DB_HOST = _secret("SUPABASE_DB_HOST")
+SUPABASE_DB_NAME = _secret("SUPABASE_DB_NAME", "postgres")
+SUPABASE_DB_USER = _secret("SUPABASE_DB_USER")
+SUPABASE_DB_PASSWORD = _secret("SUPABASE_DB_PASSWORD")
+SUPABASE_DB_PORT = int(_secret("SUPABASE_DB_PORT", "5432"))
+USE_SUPABASE = _secret("USE_SUPABASE", "true").lower() in {"1", "true", "yes"}
+LAST_DB_REASON = "Conexiune neinițializată."
+
+SUPABASE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS public.programari (
+    id BIGSERIAL PRIMARY KEY,
+    data_programare DATE NOT NULL,
+    ora_programare TIME NOT NULL,
+    client TEXT NOT NULL,
+    telefon TEXT,
+    vehicul TEXT NOT NULL,
+    interventie TEXT NOT NULL,
+    observatii TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (data_programare, ora_programare, client)
+);
+
+CREATE INDEX IF NOT EXISTS idx_programari_data_ora ON public.programari (data_programare, ora_programare);
+CREATE INDEX IF NOT EXISTS idx_programari_client ON public.programari (client);
+CREATE INDEX IF NOT EXISTS idx_programari_telefon ON public.programari (telefon);
+CREATE INDEX IF NOT EXISTS idx_programari_vehicul ON public.programari (vehicul);
+""".strip()
 
 
 # -----------------------------
@@ -30,20 +57,39 @@ USE_SUPABASE = os.getenv("USE_SUPABASE", "true").lower() in {"1", "true", "yes"}
 # -----------------------------
 def get_connection() -> Tuple[Any, str]:
     """Return DB connection and backend type: postgres/sqlite."""
-    if USE_SUPABASE and psycopg2 is not None:
-        try:
-            conn = psycopg2.connect(
-                host=SUPABASE_DB_HOST,
-                dbname=SUPABASE_DB_NAME,
-                user=SUPABASE_DB_USER,
-                password=SUPABASE_DB_PASSWORD,
-                port=SUPABASE_DB_PORT,
-                sslmode="require",
-                connect_timeout=8,
-            )
-            return conn, "postgres"
-        except Exception:
-            pass
+    global LAST_DB_REASON
+
+    if not USE_SUPABASE:
+        LAST_DB_REASON = "USE_SUPABASE este dezactivat (false)."
+    elif psycopg2 is None:
+        LAST_DB_REASON = "Lipsește pachetul psycopg2 în mediul curent."
+    else:
+        missing_keys = [
+            key
+            for key, value in {
+                "SUPABASE_DB_HOST": SUPABASE_DB_HOST,
+                "SUPABASE_DB_USER": SUPABASE_DB_USER,
+                "SUPABASE_DB_PASSWORD": SUPABASE_DB_PASSWORD,
+            }.items()
+            if not value
+        ]
+        if not missing_keys:
+            try:
+                conn = psycopg2.connect(
+                    host=SUPABASE_DB_HOST,
+                    dbname=SUPABASE_DB_NAME,
+                    user=SUPABASE_DB_USER,
+                    password=SUPABASE_DB_PASSWORD,
+                    port=SUPABASE_DB_PORT,
+                    sslmode="require",
+                    connect_timeout=8,
+                )
+                LAST_DB_REASON = "Conectat cu succes la Supabase PostgreSQL."
+                return conn, "postgres"
+            except Exception as exc:
+                LAST_DB_REASON = f"Conexiunea PostgreSQL a eșuat: {str(exc)}"
+        else:
+            LAST_DB_REASON = f"Lipsesc chei Supabase: {', '.join(missing_keys)}"
 
     conn = sqlite3.connect(SQLITE_DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -406,6 +452,52 @@ def inject_styles() -> None:
             margin-bottom: 0.1rem;
             line-height: 1.35;
         }
+        .appt-mobile-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.45rem 0.8rem;
+            margin-top: 0.45rem;
+        }
+        .appt-mobile-item {
+            background: #f4f7fd;
+            border-radius: 10px;
+            padding: 0.5rem 0.6rem;
+        }
+        .appt-mobile-label {
+            color: #42536e;
+            font-size: 0.75rem;
+            margin-bottom: 0.08rem;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .appt-mobile-value {
+            color: #0f274b;
+            font-size: 0.94rem;
+            font-weight: 600;
+            line-height: 1.25;
+            word-break: break-word;
+        }
+
+        @media (max-width: 640px) {
+            .appt-card {
+                padding: 0.8rem;
+                border-radius: 12px;
+            }
+            .appt-time {
+                font-size: 1.05rem;
+            }
+            .appt-main {
+                font-size: 0.98rem;
+            }
+            .appt-mobile-grid {
+                grid-template-columns: 1fr;
+                gap: 0.4rem;
+            }
+            .stButton > button {
+                min-height: 2.55rem;
+                font-size: 0.95rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -481,9 +573,25 @@ def render_programare_card(programare: Dict[str, Any]) -> None:
         f"""
         <div class="appt-card">
             <div class="appt-time">🕒 {programare['ora_programare']}</div>
-            <div class="appt-main">{programare['client']} · {programare['vehicul']}</div>
-            <div class="appt-meta"><strong>Telefon:</strong> {programare.get('telefon') or '-'}</div>
-            <div class="appt-meta"><strong>Intervenție:</strong> {programare['interventie']}</div>
+            <div class="appt-main">{programare['client']}</div>
+            <div class="appt-mobile-grid">
+                <div class="appt-mobile-item">
+                    <div class="appt-mobile-label">Model tehnică</div>
+                    <div class="appt-mobile-value">{programare['vehicul']}</div>
+                </div>
+                <div class="appt-mobile-item">
+                    <div class="appt-mobile-label">Telefon</div>
+                    <div class="appt-mobile-value">{programare.get('telefon') or '-'}</div>
+                </div>
+                <div class="appt-mobile-item">
+                    <div class="appt-mobile-label">Data programării</div>
+                    <div class="appt-mobile-value">{programare['data_programare']}</div>
+                </div>
+                <div class="appt-mobile-item">
+                    <div class="appt-mobile-label">Intervenție</div>
+                    <div class="appt-mobile-value">{programare['interventie']}</div>
+                </div>
+            </div>
             <div class="appt-meta"><strong>Observații:</strong> {programare.get('observatii') or '-'}</div>
         </div>
         """,
@@ -667,7 +775,8 @@ def main() -> None:
     if backend == "postgres":
         st.success("Bază de date activă: Supabase PostgreSQL")
     else:
-        st.warning("Supabase indisponibil în acest mediu. Se folosește fallback local SQLite (programari.db).")
+        st.warning(f"Supabase indisponibil. Se folosește fallback local SQLite (programari.db). Motiv: {LAST_DB_REASON}")
+
 
     st.title("Programări Service Moto / ATV")
     st.markdown(
