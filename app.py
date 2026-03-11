@@ -552,7 +552,6 @@ def validate_required_fields(payload: Dict[str, str]) -> Optional[str]:
 
 def render_new_appointment_tab() -> None:
     st.subheader("Programare nouă")
-    st.caption("Completează câmpurile esențiale și salvează în câteva secunde.")
 
     with st.container(border=True):
         with st.form("new_appointment_form", clear_on_submit=True):
@@ -804,17 +803,11 @@ def main() -> None:
     inject_styles()
 
     backend = active_backend()
-    if backend == "postgres":
-        st.success("Bază de date activă: Supabase PostgreSQL")
-    else:
+    if backend != "postgres":
         st.warning(f"Supabase indisponibil. Se folosește fallback local SQLite (programari.db). Motiv: {LAST_DB_REASON}")
 
 
     st.title("Programări Service Moto / ATV")
-    st.markdown(
-        '<p class="subtitle">Panou simplu pentru planificarea rapidă a programărilor</p>',
-        unsafe_allow_html=True,
-    )
 
     tab_new, tab_list = st.tabs(["Programare nouă", "Programări"])
     with tab_new:
