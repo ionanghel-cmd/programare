@@ -29,6 +29,7 @@ SUPABASE_DB_USER = _secret("SUPABASE_DB_USER")
 SUPABASE_DB_PASSWORD = _secret("SUPABASE_DB_PASSWORD")
 SUPABASE_DB_PORT = int(_secret("SUPABASE_DB_PORT", "5432"))
 USE_SUPABASE = _secret("USE_SUPABASE", "true").lower() in {"1", "true", "yes"}
+LAST_DB_REASON = "Conexiune neinițializată."
 
 SUPABASE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS public.programari (
@@ -56,21 +57,39 @@ CREATE INDEX IF NOT EXISTS idx_programari_vehicul ON public.programari (vehicul)
 # -----------------------------
 def get_connection() -> Tuple[Any, str]:
     """Return DB connection and backend type: postgres/sqlite."""
-    has_supabase_config = all([SUPABASE_DB_HOST, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD])
-    if USE_SUPABASE and psycopg2 is not None and has_supabase_config:
-        try:
-            conn = psycopg2.connect(
-                host=SUPABASE_DB_HOST,
-                dbname=SUPABASE_DB_NAME,
-                user=SUPABASE_DB_USER,
-                password=SUPABASE_DB_PASSWORD,
-                port=SUPABASE_DB_PORT,
-                sslmode="require",
-                connect_timeout=8,
-            )
-            return conn, "postgres"
-        except Exception:
-            pass
+    global LAST_DB_REASON
+
+    if not USE_SUPABASE:
+        LAST_DB_REASON = "USE_SUPABASE este dezactivat (false)."
+    elif psycopg2 is None:
+        LAST_DB_REASON = "Lipsește pachetul psycopg2 în mediul curent."
+    else:
+        missing_keys = [
+            key
+            for key, value in {
+                "SUPABASE_DB_HOST": SUPABASE_DB_HOST,
+                "SUPABASE_DB_USER": SUPABASE_DB_USER,
+                "SUPABASE_DB_PASSWORD": SUPABASE_DB_PASSWORD,
+            }.items()
+            if not value
+        ]
+        if not missing_keys:
+            try:
+                conn = psycopg2.connect(
+                    host=SUPABASE_DB_HOST,
+                    dbname=SUPABASE_DB_NAME,
+                    user=SUPABASE_DB_USER,
+                    password=SUPABASE_DB_PASSWORD,
+                    port=SUPABASE_DB_PORT,
+                    sslmode="require",
+                    connect_timeout=8,
+                )
+                LAST_DB_REASON = "Conectat cu succes la Supabase PostgreSQL."
+                return conn, "postgres"
+            except Exception as exc:
+                LAST_DB_REASON = f"Conexiunea PostgreSQL a eșuat: {str(exc)}"
+        else:
+            LAST_DB_REASON = f"Lipsesc chei Supabase: {', '.join(missing_keys)}"
 
     conn = sqlite3.connect(SQLITE_DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -756,7 +775,8 @@ def main() -> None:
     if backend == "postgres":
         st.success("Bază de date activă: Supabase PostgreSQL")
     else:
-        st.warning("Supabase indisponibil în acest mediu. Se folosește fallback local SQLite (programari.db).")
+        st.warning(f"Supabase indisponibil. Se folosește fallback local SQLite (programari.db). Motiv: {LAST_DB_REASON}")
+
 
 
     st.title("Programări Service Moto / ATV")
